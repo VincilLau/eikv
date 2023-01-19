@@ -18,6 +18,8 @@ pub enum EikvError {
     DecodeError(#[from] DecodeError),
     #[error("checksum error: the checksumes of {owner} doesn't match")]
     ChecksumError { owner: &'static str },
+    #[error("wal file is corrupt: {0}")]
+    WalCorrpution(String),
 }
 
 pub type EikvResult<T> = Result<T, EikvError>;

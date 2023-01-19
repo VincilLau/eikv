@@ -9,7 +9,7 @@ use crate::{
 use prost::Message;
 use std::{
     fs::{File, OpenOptions},
-    io::{Error as IoError, ErrorKind as IoErrorKind, Read, Seek},
+    io::Read,
 };
 
 pub(crate) struct Reader {
@@ -20,7 +20,12 @@ impl Reader {
     pub(crate) fn open(path: &str) -> EikvResult<(Reader, u64)> {
         let mut file = OpenOptions::new().read(true).open(path)?;
         let mut buf = [0; 8];
-        file.read(&mut buf)?;
+        let n = file.read(&mut buf)?;
+        if n != 8 {
+            return Err(EikvError::WalCorrpution(
+                "the seq of wal is incomplete".to_owned(),
+            ));
+        }
         let seq = decode_fixed_u64(&buf);
         let reader = Reader { file };
         Ok((reader, seq))
@@ -32,8 +37,9 @@ impl Reader {
         if n == 0 {
             return Ok(None);
         } else if n < 8 {
-            let err = IoError::new(IoErrorKind::Other, "write batch header is incomplete");
-            return Err(EikvError::IoError(err));
+            return Err(EikvError::WalCorrpution(
+                "write batch header is incomplete".to_owned(),
+            ));
         }
 
         let checksum = decode_fixed_u32(&buf[..4]);
@@ -41,7 +47,12 @@ impl Reader {
 
         let mut wb_buf = vec![0; len];
         wb_buf[4..8].copy_from_slice(&buf[4..]);
-        self.file.read(&mut wb_buf[8..])?;
+        let n = self.file.read(&mut wb_buf[8..])?;
+        if n != wb_buf.len() - 8 {
+            return Err(EikvError::WalCorrpution(
+                "write batch is incomplete".to_owned(),
+            ));
+        }
 
         let expect_checksum = crc32_checksum(&wb_buf);
         if checksum != expect_checksum {
