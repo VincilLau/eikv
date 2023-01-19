@@ -49,7 +49,6 @@ impl WriteBatch {
         self.pwb.encode(buf)?;
 
         let len = buf.len() - old_len;
-        debug_assert!(len <= u32::MAX as usize);
         encode_fixed_u32(&mut buf[old_len + 4..old_len + 8], len as u32);
         let checksum = crc32_checksum(&buf[old_len..]);
         encode_fixed_u32(&mut buf[old_len..old_len + 4], checksum);
