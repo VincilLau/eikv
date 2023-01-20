@@ -1,7 +1,9 @@
 mod proto;
+mod sst;
 mod util;
 mod wal;
 
+pub use sst::{Compressor, Filter, FilterFactory};
 pub use wal::WriteBatch;
 
 use prost::{DecodeError, EncodeError};
@@ -18,8 +20,12 @@ pub enum EikvError {
     DecodeError(#[from] DecodeError),
     #[error("checksum error: the checksumes of {owner} doesn't match")]
     ChecksumError { owner: &'static str },
+    #[error("std error: {0}")]
+    StdError(#[from] Box<dyn std::error::Error>),
     #[error("wal file is corrupt: {0}")]
     WalCorrpution(String),
+    #[error("sstable file is corrupt: {0}")]
+    SstCorrpution(String),
 }
 
 pub type EikvResult<T> = Result<T, EikvError>;
