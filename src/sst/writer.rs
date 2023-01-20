@@ -233,7 +233,11 @@ impl Writer {
         Ok(index_block_start)
     }
 
-    pub(crate) fn finish(mut self, min_user_key: Vec<u8>, max_user_key: Vec<u8>) -> EikvResult<()> {
+    pub(crate) fn finish(
+        &mut self,
+        min_user_key: Vec<u8>,
+        max_user_key: Vec<u8>,
+    ) -> EikvResult<()> {
         if !self.data_block_builder.is_empty() {
             let offset = self.file.stream_position()?;
             self.data_block_offsets.push(offset);

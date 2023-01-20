@@ -15,43 +15,49 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Clone)]
 pub(crate) struct IteratorOptions {
     pub(crate) block_size: usize,
-    pub(crate) cache: Arc<Cache>,
     pub(crate) compressor: Option<Arc<dyn Compressor>>,
     pub(crate) filter_factory: Option<Arc<dyn FilterFactory>>,
 }
 
 pub(crate) struct Iterator {
-    options: IteratorOptions,
-    file: File,
-    index_block_offset: u64,
-    index_block: Vec<u64>,
-    index_block_index: usize,
+    cache: Arc<Cache>,
     entries: Vec<Entry>,
     entry_index: usize,
+    file: File,
+    index_block: Vec<u64>,
+    index_block_index: usize,
+    index_block_offset: u64,
+    options: IteratorOptions,
 }
 
 impl Iterator {
-    pub(crate) fn new(path: &str, options: IteratorOptions) -> EikvResult<Iterator> {
+    pub(crate) fn new(
+        path: &str,
+        options: IteratorOptions,
+        cache: Arc<Cache>,
+    ) -> EikvResult<Iterator> {
         let file = OpenOptions::new().read(true).open(path)?;
         let iterator = Iterator {
-            options,
+            cache,
+            entry_index: 0,
+            entries: vec![],
             file,
-            index_block_offset: 0,
             index_block: vec![],
             index_block_index: 0,
-            entries: vec![],
-            entry_index: 0,
+            index_block_offset: 0,
+            options,
         };
         Ok(iterator)
     }
 
     fn read_index_block(&mut self) -> EikvResult<()> {
-        let data_block_count = self.options.cache.footer.data_block_count;
+        let data_block_count = self.cache.footer.data_block_count;
         let block_size = self.options.block_size;
         let next_offset = self.index_block_offset + block_size as u64;
-        let index_block_end = self.options.cache.footer.index_block_end;
+        let index_block_end = self.cache.footer.index_block_end;
         debug_assert!(next_offset <= index_block_end);
 
         let count_in_block = (block_size / 8) - 1;
@@ -139,11 +145,11 @@ impl Iterator {
     }
 
     pub(crate) fn seek_to_first(&mut self) -> EikvResult<()> {
-        self.index_block_offset = self.options.cache.footer.index_block_start;
+        self.index_block_offset = self.cache.footer.index_block_start;
         self.read_index_block()?;
 
         let data_block_offset = self.index_block[0];
-        let footer = &self.options.cache.footer;
+        let footer = &self.cache.footer;
         let next_block_offset = if footer.data_block_count == 1 {
             footer.data_block_end
         } else {
@@ -155,11 +161,18 @@ impl Iterator {
         Ok(())
     }
 
-    pub(crate) fn next(&mut self) -> EikvResult<Option<Entry>> {
-        if self.entry_index < self.entries.len() {
-            let entry = self.entries[self.entry_index].clone();
+    pub(crate) fn entry(&self) -> Option<&Entry> {
+        if self.entries.len() == self.entry_index {
+            None
+        } else {
+            Some(&self.entries[self.entry_index])
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> EikvResult<()> {
+        if self.entry_index < self.entries.len() - 1 {
             self.entry_index += 1;
-            return Ok(Some(entry));
+            return Ok(());
         }
 
         if self.index_block_index < self.index_block.len() - 1 {
@@ -168,14 +181,14 @@ impl Iterator {
             let data_block_size = (next_block_offset - data_block_offset) as usize;
             self.read_data_block(data_block_offset, data_block_size)?;
             self.index_block_index += 1;
-            let entry = self.entries[0].clone();
-            return Ok(Some(entry));
+            return Ok(());
         }
 
-        let index_block_end = self.options.cache.footer.index_block_end;
+        let index_block_end = self.cache.footer.index_block_end;
         let block_size = self.options.block_size as u64;
         if self.index_block_offset == index_block_end - block_size {
-            return Ok(None);
+            self.entry_index = self.entries.len();
+            return Ok(());
         }
 
         self.index_block_offset += block_size;
@@ -183,7 +196,6 @@ impl Iterator {
         self.read_index_block()?;
         let data_block_size = (self.index_block[0] - data_block_offset) as usize;
         self.read_data_block(data_block_offset, data_block_size)?;
-        let entry = self.entries[0].clone();
-        Ok(Some(entry))
+        Ok(())
     }
 }
