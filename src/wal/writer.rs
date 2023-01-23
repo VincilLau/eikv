@@ -1,7 +1,7 @@
-use crate::{util::coding::append_fixed_u64, EikvResult, WriteBatch};
+use crate::{EikvResult, Key, Value, WriteBatch};
 use std::{
-    fs::{File, OpenOptions},
-    io::Write,
+    fs::File,
+    io::{Seek, Write},
 };
 
 pub(crate) struct Writer {
@@ -9,19 +9,24 @@ pub(crate) struct Writer {
 }
 
 impl Writer {
-    pub(crate) fn create(path: &str, seq: u64) -> EikvResult<Writer> {
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let mut buf = vec![];
-        append_fixed_u64(&mut buf, seq);
-        file.write(&buf)?;
+    pub(crate) fn create(path: &str) -> EikvResult<Writer> {
+        let file = File::create(path)?;
         let writer = Writer { file };
         Ok(writer)
     }
 
-    pub(crate) fn append(&mut self, wb: &WriteBatch) -> EikvResult<()> {
+    pub(crate) fn append<K: Key, V: Value>(
+        &mut self,
+        write_batch: WriteBatch<K, V>,
+    ) -> EikvResult<()> {
         let mut buf = vec![];
-        wb.append_to(&mut buf)?;
+        write_batch.encode(&mut buf)?;
         self.file.write(&buf)?;
         Ok(())
+    }
+
+    pub(crate) fn file_size(&mut self) -> EikvResult<u64> {
+        let pos = self.file.stream_position()?;
+        Ok(pos)
     }
 }

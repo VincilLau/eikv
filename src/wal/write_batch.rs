@@ -1,52 +1,74 @@
 use crate::{
-    proto::wal::{Entry, WriteBatch as ProtoWriteBatch},
+    model::Entry,
     util::{
         checksum::crc32_checksum,
         coding::{append_fixed_u32, encode_fixed_u32},
     },
-    EikvResult,
+    EikvError, EikvResult, Key, Value,
 };
-use prost::Message;
 
-pub struct WriteBatch {
-    pub(super) pwb: ProtoWriteBatch,
+pub struct WriteBatch<K: Key, V: Value> {
+    entries: Vec<Entry<K, V>>,
 }
 
-impl WriteBatch {
-    pub fn new() -> WriteBatch {
-        WriteBatch {
-            pwb: ProtoWriteBatch { entries: vec![] },
+impl<K: Key, V: Value> WriteBatch<K, V> {
+    pub fn new() -> WriteBatch<K, V> {
+        WriteBatch { entries: vec![] }
+    }
+
+    pub(crate) fn entries(&self) -> &Vec<Entry<K, V>> {
+        &self.entries
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.entries.extend(other.entries);
+    }
+
+    pub(crate) fn set_seqs(&mut self, start: u64) {
+        let mut seq = start;
+        for entry in &mut self.entries {
+            entry.seq = seq;
+            seq += 1;
         }
     }
 
-    pub(crate) fn entries(&self) -> &[Entry] {
-        &self.pwb.entries
-    }
-
-    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> &mut Self {
+    pub fn put(&mut self, key: K, value: V) -> &mut Self {
         let entry = Entry {
             key,
+            seq: 0,
             value: Some(value),
         };
-        self.pwb.entries.push(entry);
+        self.entries.push(entry);
         self
     }
 
-    pub fn delete(&mut self, key: Vec<u8>) -> &mut Self {
-        let entry = Entry { key, value: None };
-        self.pwb.entries.push(entry);
+    pub fn delete(&mut self, key: K) -> &mut Self {
+        let entry = Entry {
+            key,
+            seq: 0,
+            value: None,
+        };
+        self.entries.push(entry);
         self
     }
 
-    pub(super) fn append_to(&self, buf: &mut Vec<u8>) -> EikvResult<()> {
+    pub(super) fn encode(self, buf: &mut Vec<u8>) -> EikvResult<()> {
         let old_len = buf.len();
 
-        let encoded_len = 4 + 4 + self.pwb.encoded_len();
-        buf.repeat(encoded_len);
+        append_fixed_u32(buf, 0);
+        append_fixed_u32(buf, 0);
 
-        append_fixed_u32(buf, 0);
-        append_fixed_u32(buf, 0);
-        self.pwb.encode(buf)?;
+        for entry in self.entries {
+            entry.encode(buf)?;
+        }
 
         let len = buf.len() - old_len;
         encode_fixed_u32(&mut buf[old_len + 4..old_len + 8], len as u32);
@@ -54,5 +76,23 @@ impl WriteBatch {
         encode_fixed_u32(&mut buf[old_len..old_len + 4], checksum);
 
         Ok(())
+    }
+
+    pub(super) fn decode(buf: &[u8], checksum: u32) -> EikvResult<Self> {
+        if checksum != crc32_checksum(&buf) {
+            let reason = "the checksumes of the write batch doesn't match".to_owned();
+            return Err(EikvError::WalCorrpution(reason));
+        }
+
+        let mut buf_off = 0;
+        let mut entries = vec![];
+        while buf_off != buf.len() {
+            let (entry, n) = Entry::decode(&buf[buf_off..])?;
+            entries.push(entry);
+            buf_off += n;
+        }
+
+        let write_batch = WriteBatch { entries };
+        Ok(write_batch)
     }
 }
