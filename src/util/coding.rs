@@ -68,7 +68,7 @@ pub(crate) fn append_var_u64(buf: &mut Vec<u8>, mut value: u64) {
     buf.push(b);
 }
 
-pub(crate) fn parse_var_u32(buf: &[u8]) -> Option<(u32, usize)> {
+pub(crate) fn decode_var_u32(buf: &[u8]) -> Option<(u32, usize)> {
     if buf.is_empty() {
         return None;
     }
@@ -91,7 +91,7 @@ pub(crate) fn parse_var_u32(buf: &[u8]) -> Option<(u32, usize)> {
     None
 }
 
-pub(crate) fn parse_var_u64(buf: &[u8]) -> Option<(u64, usize)> {
+pub(crate) fn decode_var_u64(buf: &[u8]) -> Option<(u64, usize)> {
     if buf.is_empty() {
         return None;
     }
@@ -115,7 +115,7 @@ pub(crate) fn parse_var_u64(buf: &[u8]) -> Option<(u64, usize)> {
 }
 
 pub(crate) fn decode_bytes_with_len(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
-    let (bytes_len, mut buf_off) = match parse_var_u32(buf) {
+    let (bytes_len, mut buf_off) = match decode_var_u32(buf) {
         Some((bytes_len, n)) => (bytes_len as usize, n),
         None => return None,
     };

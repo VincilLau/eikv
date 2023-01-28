@@ -3,7 +3,7 @@ use std::{
     collections::VecDeque,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Condvar, Mutex,
+        Condvar, Mutex,
     },
     thread::{self, ThreadId},
 };
@@ -37,7 +37,7 @@ impl<K: Key, V: Value> WriteQueue<K, V> {
         }
     }
 
-    pub(super) fn line_up(&mut self, write_batch: WriteBatch<K, V>) -> Option<WriteBatch<K, V>> {
+    pub(super) fn line_up(&self, write_batch: WriteBatch<K, V>) -> Option<WriteBatch<K, V>> {
         let write_op = WriteOp::new(write_batch);
         let mut guard = self.queue.lock().unwrap();
         guard.push_back(write_op);
@@ -68,7 +68,7 @@ impl<K: Key, V: Value> WriteQueue<K, V> {
         Some(write_batch)
     }
 
-    pub(super) fn finished(&self) {
+    pub(super) fn notify_waiters(&self) {
         self.finished.notify_all();
     }
 }

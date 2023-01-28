@@ -84,7 +84,7 @@ impl<K: Key, V: Value> WriteBatch<K, V> {
             return Err(EikvError::WalCorrpution(reason));
         }
 
-        let mut buf_off = 0;
+        let mut buf_off = 8;
         let mut entries = vec![];
         while buf_off != buf.len() {
             let (entry, n) = Entry::decode(&buf[buf_off..])?;

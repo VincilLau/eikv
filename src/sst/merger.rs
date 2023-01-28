@@ -1,25 +1,13 @@
-use std::{
-    cmp::Ordering,
-    sync::Arc,
-};
+use super::{Iterator, Writer};
+use crate::{model::Entry, util::time::unix_now, DBOptions, EikvResult, Key, Value};
+use std::cmp::{min, Ordering};
 
-use super::{writer::WriterOptions, Iterator, Writer};
-use crate::{proto::sst::Entry, util::time::unix_now, Comparator, EikvResult};
-
-pub(crate) struct MergerOptions {
-    pub(crate) writer_options: WriterOptions,
-    pub(crate) time_limit: usize,
-    pub(crate) file_size_limit: u64,
-    pub(crate) version_guard: u64,
-    pub(crate) comparator: Arc<dyn Comparator>,
-    pub(crate) min_user_key: Vec<u8>,
-    pub(crate) max_user_key: Vec<u8>,
-}
-
-pub(crate) struct Merger {
-    options: MergerOptions,
-    writer: Writer,
-    iterators: Vec<Iterator>,
+pub(crate) struct Merger<K: Key, V: Value> {
+    iterators: Vec<Iterator<K, V>>,
+    options: DBOptions,
+    seq_guard: u64,
+    time_limit: usize,
+    writer: Writer<K, V>,
 }
 
 pub(crate) enum MergeResult {
@@ -28,30 +16,24 @@ pub(crate) enum MergeResult {
     Finish,
 }
 
-impl Merger {
+impl<K: Key, V: Value> Merger<K, V> {
     pub(crate) fn new(
         path: &str,
-        iterators: Vec<Iterator>,
-        options: MergerOptions,
-    ) -> EikvResult<Merger> {
-        let writer = Writer::new(path, options.writer_options.clone())?;
+        iterators: Vec<Iterator<K, V>>,
+        options: DBOptions,
+        seq_guard: u64,
+        size_limit: u64,
+        time_limit: usize,
+    ) -> EikvResult<Merger<K, V>> {
+        let writer = Writer::new(path, options.clone(), size_limit)?;
         let merger = Merger {
-            options,
-            writer,
             iterators,
+            options,
+            seq_guard,
+            time_limit,
+            writer,
         };
         Ok(merger)
-    }
-
-    fn compare(&self, e1: &Entry, e2: &Entry) -> Ordering {
-        let ordering = self
-            .options
-            .comparator
-            .compare(&e1.unshared_key, &e2.unshared_key);
-        match ordering {
-            Ordering::Equal => e1.seq.cmp(&e2.seq),
-            _ => ordering,
-        }
     }
 
     fn finished(&self) -> bool {
@@ -63,31 +45,26 @@ impl Merger {
         true
     }
 
-    fn get_min_user_key(&self) -> Vec<u8> {
-        assert!(!self.finished());
-        let mut min_user_key = None;
+    fn get_min_entry(&self) -> Entry<K, V> {
+        debug_assert!(!self.finished());
+
+        let mut min_entry = None;
         for iterator in &self.iterators {
             let entry = match iterator.entry() {
                 Some(entry) => entry,
                 None => continue,
             };
-            min_user_key = match min_user_key {
-                Some(min_user_key) => {
-                    let min_user_key = if entry.unshared_key < min_user_key {
-                        entry.unshared_key.clone()
-                    } else {
-                        min_user_key
-                    };
-                    Some(min_user_key)
-                }
-                None => Some(entry.unshared_key.clone()),
+            min_entry = match min_entry {
+                Some(min_entry) => Some(min(entry, min_entry)),
+                None => Some(entry),
             }
         }
-        min_user_key.unwrap()
+
+        min_entry.unwrap().clone()
     }
 
-    fn read_some(&mut self) -> EikvResult<Vec<Entry>> {
-        let min_user_key = self.get_min_user_key();
+    fn read_some(&mut self) -> EikvResult<Vec<Entry<K, V>>> {
+        let min_entry = self.get_min_entry();
         let mut last_before_guard = None;
         let mut entries = vec![];
         for iterator in self.iterators.iter_mut() {
@@ -96,10 +73,10 @@ impl Merger {
                     Some(entry) => entry,
                     None => break,
                 };
-                if entry.unshared_key != min_user_key {
+                if entry.key != min_entry.key {
                     break;
                 }
-                if entry.seq <= self.options.version_guard {
+                if entry.seq <= self.seq_guard {
                     last_before_guard = Some(entry.clone());
                 } else {
                     entries.push(entry.clone());
@@ -107,31 +84,20 @@ impl Merger {
                 iterator.next()?;
             }
         }
-        match last_before_guard {
-            Some(last_before_guard) => entries.push(last_before_guard),
-            None => (),
+
+        if let Some(last_before_guard) = last_before_guard {
+            entries.push(last_before_guard);
         }
-        entries.sort_unstable_by(|e1, e2| e1.seq.cmp(&e2.seq));
+
+        entries.sort_unstable();
         Ok(entries)
     }
 
     pub(crate) fn merge(&mut self) -> EikvResult<MergeResult> {
-        let start_at = unix_now()?;
+        let start_at = unix_now();
         loop {
             if self.finished() {
-                self.writer.finish(
-                    self.options.min_user_key.clone(),
-                    self.options.max_user_key.clone(),
-                )?;
                 return Ok(MergeResult::Finish);
-            }
-
-            if self.writer.stream_position()? > self.options.file_size_limit {
-                self.writer.finish(
-                    self.options.min_user_key.clone(),
-                    self.options.max_user_key.clone(),
-                )?;
-                return Ok(MergeResult::Full);
             }
 
             let entries = self.read_some()?;
@@ -140,8 +106,8 @@ impl Merger {
                 self.writer.append(entry)?;
             }
 
-            let now = unix_now()?;
-            if now - start_at > self.options.time_limit as u128 {
+            let now = unix_now();
+            if now - start_at > self.time_limit as u128 {
                 return Ok(MergeResult::Timeout);
             }
         }

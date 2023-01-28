@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
-type Table<K, V> = BTreeSet<Entry<K, V>>;
+pub(crate) type Table<K, V> = BTreeSet<Entry<K, V>>;
 
 pub(super) struct MemTable<K: Key, V: Value> {
     mut_table: Mutex<Table<K, V>>,
@@ -20,14 +20,14 @@ impl<K: Key, V: Value> MemTable<K, V> {
         }
     }
 
-    pub(super) fn update(&mut self, write_batch: &WriteBatch<K, V>) {
+    pub(super) fn update(&self, write_batch: &WriteBatch<K, V>) {
         let mut guard = self.mut_table.lock().unwrap();
         for entry in write_batch.entries() {
             guard.insert(entry.clone());
         }
     }
 
-    pub(super) fn freeze(&mut self) {
+    pub(super) fn freeze(&self) {
         let mut mut_table = self.mut_table.lock().unwrap();
         let mut immut_table = self.immut_table.write().unwrap();
         let mut tmp_table = Table::new();
@@ -54,5 +54,15 @@ impl<K: Key, V: Value> MemTable<K, V> {
             Some(entry) => Some(entry.clone()),
             None => None,
         }
+    }
+
+    pub(super) fn recover_mut_table(&mut self, table: Table<K, V>) {
+        let mut guard = self.mut_table.lock().unwrap();
+        *guard = table;
+    }
+
+    pub(super) fn recover_immut_table(&mut self, table: Table<K, V>) {
+        let mut guard = self.immut_table.write().unwrap();
+        *guard = Arc::new(table);
     }
 }

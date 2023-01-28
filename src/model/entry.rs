@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::{
-    util::coding::{append_var_u32, append_var_u64, decode_bytes_with_len, parse_var_u64},
+    util::coding::{append_var_u32, append_var_u64, decode_bytes_with_len, decode_var_u64},
     EikvError, EikvResult, Key, Value,
 };
 
@@ -40,7 +40,7 @@ impl<K: Key, V: Value> Ord for Entry<K, V> {
 
 impl<K: Key, V: Value> Entry<K, V> {
     pub(crate) fn encode(self, buf: &mut Vec<u8>) -> EikvResult<()> {
-        let key_bytes = self.key.into_vec_u8()?;
+        let key_bytes = self.key.encode()?;
         let key_len = key_bytes.len() as u32;
         append_var_u32(buf, key_len);
         buf.extend(key_bytes);
@@ -50,7 +50,7 @@ impl<K: Key, V: Value> Entry<K, V> {
         match self.value {
             Some(value) => {
                 buf.push(1);
-                let value_bytes = value.into_vec_u8()?;
+                let value_bytes = value.encode()?;
                 let value_len = value_bytes.len() as u32;
                 append_var_u32(buf, value_len);
                 buf.extend(value_bytes);
@@ -67,7 +67,7 @@ impl<K: Key, V: Value> Entry<K, V> {
             None => return None,
         };
 
-        let seq = match parse_var_u64(&buf[buf_off..]) {
+        let seq = match decode_var_u64(&buf[buf_off..]) {
             Some((seq, n)) => {
                 buf_off += n;
                 seq
@@ -106,7 +106,7 @@ impl<K: Key, V: Value> Entry<K, V> {
     pub(crate) fn decode(buf: &[u8]) -> EikvResult<(Self, usize)> {
         match Self::decode_to_vec_u8(buf) {
             Some((vec_u8_entry, n)) => {
-                let key = Key::from_vec_u8(vec_u8_entry.key)?;
+                let key = K::decode(vec_u8_entry.key)?;
                 let mut entry = Self {
                     key,
                     seq: vec_u8_entry.seq,
@@ -114,7 +114,7 @@ impl<K: Key, V: Value> Entry<K, V> {
                 };
 
                 if let Some(value) = vec_u8_entry.value {
-                    let value = Value::from_vec_u8(value)?;
+                    let value = Value::decode(value)?;
                     entry.value = Some(value)
                 }
 

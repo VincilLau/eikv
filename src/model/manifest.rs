@@ -1,12 +1,12 @@
 use crate::{
-    db::path::{current_path, current_tmp_path, manifest_path},
+    db::path::{current_path, current_tmp_path, manifest_path, sst_level_dir_path},
     limit::{LEVEL_MAX, LEVEL_MIN},
     EikvError, EikvResult,
 };
 use std::{
     collections::HashSet,
     fs::{rename, File},
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
 };
 
@@ -28,6 +28,10 @@ impl Manifest {
             wals: HashSet::new(),
             sstables,
         }
+    }
+
+    pub(crate) fn wals(&self) -> &HashSet<u64> {
+        &self.wals
     }
 
     pub(crate) fn alloc_wal(&mut self) -> u64 {
@@ -92,5 +96,50 @@ impl Manifest {
         Manifest::write_current(&current_tmp_path, manifest_seq)?;
         rename(current_tmp_path, current_path)?;
         Ok(())
+    }
+
+    fn get_level(db_path: &str, file_seq: u64) -> EikvResult<usize> {
+        for level in LEVEL_MIN..=LEVEL_MAX {
+            let level_dir = sst_level_dir_path(db_path, level)?;
+        }
+
+        todo!()
+    }
+
+    pub(crate) fn load(db_path: &str) -> EikvResult<Manifest> {
+        let manifest_seq = Manifest::read_current(db_path)?;
+        let manifest_path = manifest_path(db_path, manifest_seq)?;
+        let file = File::open(&manifest_path).unwrap();
+        let mut manifest = Manifest::new();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.ends_with(".wal") {
+                let file_seq = match line[..line.len() - 4].parse() {
+                    Ok(file_seq) => file_seq,
+                    Err(err) => {
+                        let reason =
+                            format!("failed to parse manifest line: line={line}, err={err}");
+                        return Err(EikvError::ManifestError(reason));
+                    }
+                };
+                manifest.wals.insert(file_seq);
+                continue;
+            }
+
+            if line.ends_with(".sst") {
+                let file_seq = match line[..line.len() - 4].parse() {
+                    Ok(file_seq) => file_seq,
+                    Err(err) => {
+                        let reason =
+                            format!("failed to parse manifest line: line={line}, err={err}");
+                        return Err(EikvError::ManifestError(reason));
+                    }
+                };
+                manifest.wals.insert(file_seq);
+                continue;
+            }
+        }
+
+        Ok(manifest)
     }
 }

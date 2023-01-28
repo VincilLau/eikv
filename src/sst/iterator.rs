@@ -1,13 +1,6 @@
-use prost::Message;
-
-use super::cache::Cache;
 use crate::{
-    proto::sst::{DataBlock, DataBlockPayload, Entry, EntryGroup},
-    util::{
-        checksum::crc32_checksum,
-        coding::{decode_fixed_u32, decode_fixed_u64},
-    },
-    Compressor, EikvError, EikvResult, FilterFactory,
+    model::{Entry, SstMeta},
+    DBOptions, EikvError, EikvResult, Key, Value,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -15,153 +8,66 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone)]
-pub(crate) struct IteratorOptions {
-    pub(crate) block_size: usize,
-    pub(crate) compressor: Option<Arc<dyn Compressor>>,
-    pub(crate) filter_factory: Option<Arc<dyn FilterFactory>>,
-}
+use super::{data_block::decode_block, index_block};
 
-pub(crate) struct Iterator {
-    cache: Arc<Cache>,
-    entries: Vec<Entry>,
+pub(crate) struct Iterator<K: Key, V: Value> {
+    entries: Vec<Entry<K, V>>,
     entry_index: usize,
     file: File,
-    index_block: Vec<u64>,
-    index_block_index: usize,
-    index_block_offset: u64,
-    options: IteratorOptions,
+    index_block_iterator: index_block::Iterator,
+    options: DBOptions,
 }
 
-impl Iterator {
+impl<K: Key, V: Value> Iterator<K, V> {
     pub(crate) fn new(
         path: &str,
-        options: IteratorOptions,
-        cache: Arc<Cache>,
-    ) -> EikvResult<Iterator> {
+        options: DBOptions,
+        sst_meta: Arc<SstMeta<K, V>>,
+    ) -> EikvResult<Iterator<K, V>> {
         let file = OpenOptions::new().read(true).open(path)?;
+        let index_block_iterator = index_block::Iterator::new(sst_meta.clone());
         let iterator = Iterator {
-            cache,
             entry_index: 0,
             entries: vec![],
             file,
-            index_block: vec![],
-            index_block_index: 0,
-            index_block_offset: 0,
+            index_block_iterator,
             options,
         };
         Ok(iterator)
     }
 
-    fn read_index_block(&mut self) -> EikvResult<()> {
-        let data_block_count = self.cache.footer.data_block_count;
-        let block_size = self.options.block_size;
-        let next_offset = self.index_block_offset + block_size as u64;
-        let index_block_end = self.cache.footer.index_block_end;
-        debug_assert!(next_offset <= index_block_end);
-
-        let count_in_block = (block_size / 8) - 1;
-        let count_in_block = if next_offset == index_block_end {
-            data_block_count as usize % count_in_block
-        } else {
-            count_in_block
-        };
-
-        self.file.seek(SeekFrom::Start(self.index_block_offset))?;
-        let mut index_block = vec![0; block_size];
-        let n = self.file.read(&mut index_block)?;
-        if n != index_block.len() {
-            return Err(EikvError::SstCorrpution(
-                "index block is complete".to_owned(),
-            ));
-        }
-
-        self.index_block.clear();
-        for i in 0..count_in_block {
-            let block_offset = i * 8;
-            let offset = decode_fixed_u64(&index_block[block_offset..block_offset + 8]);
-            self.index_block.push(offset);
-        }
-        self.index_block_index = 0;
-
-        Ok(())
-    }
-
-    fn read_data_block(
-        &mut self,
-        data_block_offset: u64,
-        data_block_size: usize,
-    ) -> EikvResult<()> {
-        self.file.seek(SeekFrom::Start(data_block_offset))?;
-        let mut data_block = vec![0; data_block_size];
-        let n = self.file.read(&mut data_block)?;
-        if n != data_block.len() {
-            return Err(EikvError::SstCorrpution(
-                "data block is complete".to_owned(),
-            ));
-        }
-
-        let checksum = decode_fixed_u32(&data_block[data_block_size - 4..]);
-        let expect_checksum = crc32_checksum(&data_block[..data_block_size - 4]);
-        if expect_checksum != checksum {
-            return Err(EikvError::ChecksumError {
-                owner: "data block",
-            });
-        }
-
-        let data_block = DataBlock::decode(&data_block[..data_block_size - 4])?;
-        let mut payload = DataBlockPayload::decode(data_block.payload.as_slice())?;
-        let entrygroups = match &self.options.compressor {
-            Some(compressor) => compressor.uncompress(&payload.entrygroups)?,
-            None => payload.entrygroups,
-        };
-        payload.restart_points.push(entrygroups.len() as u32);
-
-        self.entries.clear();
-        let mut prev_user_key = vec![];
-        for i in 0..payload.restart_points.len() - 1 {
-            let start = payload.restart_points[i] as usize;
-            let end = payload.restart_points[i + 1] as usize;
-            let mut entry_group = EntryGroup::decode(&entrygroups[start..end])?;
-
-            for entry in entry_group.entries.iter_mut() {
-                if entry.shared_len == 0 {
-                    prev_user_key = entry.unshared_key.clone();
-                    continue;
-                }
-
-                let mut user_key = prev_user_key;
-                user_key.truncate(entry.shared_len as usize);
-                user_key.extend(&entry.unshared_key);
-                entry.shared_len = 0;
-                entry.unshared_key = user_key.clone();
-                prev_user_key = user_key;
+    fn next_block(&mut self) -> EikvResult<()> {
+        let data_block_pos = match self.index_block_iterator.next(&mut self.file)? {
+            Some(data_block_pos) => data_block_pos,
+            None => {
+                self.entry_index += 1;
+                return Ok(());
             }
-            self.entries.extend(entry_group.entries);
-        }
-        self.entry_index = 0;
+        };
 
+        let start = data_block_pos.0;
+        let block_size = (data_block_pos.1 - data_block_pos.0) as usize;
+        let mut block = vec![0; block_size];
+        self.file.seek(SeekFrom::Start(start))?;
+        let n = self.file.read(&mut block)?;
+        if n != block_size {
+            let reason = format!("data block size is {}, read {} bytes", block_size, n);
+            return Err(EikvError::SstCorrpution(reason));
+        }
+
+        let has_filter = self.options.filter_factory.is_some();
+        self.entries = decode_block(&block, self.options.compressor.clone(), has_filter)?;
+        self.entry_index = 0;
         Ok(())
     }
 
     pub(crate) fn seek_to_first(&mut self) -> EikvResult<()> {
-        self.index_block_offset = self.cache.footer.index_block_start;
-        self.read_index_block()?;
-
-        let data_block_offset = self.index_block[0];
-        let footer = &self.cache.footer;
-        let next_block_offset = if footer.data_block_count == 1 {
-            footer.data_block_end
-        } else {
-            self.index_block[1]
-        };
-        let data_block_size = (next_block_offset - data_block_offset) as usize;
-        self.read_data_block(data_block_offset, data_block_size)?;
-
+        self.index_block_iterator.seek_to_first(&mut self.file)?;
+        self.next_block()?;
         Ok(())
     }
 
-    pub(crate) fn entry(&self) -> Option<&Entry> {
+    pub(crate) fn entry(&self) -> Option<&Entry<K, V>> {
         if self.entries.len() == self.entry_index {
             None
         } else {
@@ -170,32 +76,14 @@ impl Iterator {
     }
 
     pub(crate) fn next(&mut self) -> EikvResult<()> {
+        if self.entry_index == self.entries.len() {
+            return Ok(());
+        }
         if self.entry_index < self.entries.len() - 1 {
             self.entry_index += 1;
             return Ok(());
         }
-
-        if self.index_block_index < self.index_block.len() - 1 {
-            let data_block_offset = self.index_block[self.index_block_index];
-            let next_block_offset = self.index_block[self.index_block_index + 1];
-            let data_block_size = (next_block_offset - data_block_offset) as usize;
-            self.read_data_block(data_block_offset, data_block_size)?;
-            self.index_block_index += 1;
-            return Ok(());
-        }
-
-        let index_block_end = self.cache.footer.index_block_end;
-        let block_size = self.options.block_size as u64;
-        if self.index_block_offset == index_block_end - block_size {
-            self.entry_index = self.entries.len();
-            return Ok(());
-        }
-
-        self.index_block_offset += block_size;
-        let data_block_offset = self.index_block[self.index_block.len() - 1];
-        self.read_index_block()?;
-        let data_block_size = (self.index_block[0] - data_block_offset) as usize;
-        self.read_data_block(data_block_offset, data_block_size)?;
+        self.next_block()?;
         Ok(())
     }
 }

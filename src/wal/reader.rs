@@ -1,5 +1,8 @@
 use crate::{util::coding::decode_fixed_u32, EikvError, EikvResult, Key, Value, WriteBatch};
-use std::{fs::File, io::Read};
+use std::{
+    fs::File,
+    io::{Read, Seek},
+};
 
 pub(crate) struct Reader {
     file: File,
@@ -33,7 +36,7 @@ impl Reader {
             return Err(EikvError::WalCorrpution(reason));
         }
 
-        let write_batch = WriteBatch::decode(&wb_buf[8..], checksum)?;
+        let write_batch = WriteBatch::decode(&wb_buf, checksum)?;
         Ok(Some(write_batch))
     }
 }
