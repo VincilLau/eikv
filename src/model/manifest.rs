@@ -1,11 +1,11 @@
 use crate::{
-    db::path::{current_path, current_tmp_path, manifest_path, sst_level_dir_path},
+    db::path::{current_path, current_tmp_path, manifest_path},
     limit::{LEVEL_MAX, LEVEL_MIN},
     EikvError, EikvResult,
 };
 use std::{
     collections::HashSet,
-    fs::{rename, File},
+    fs::{remove_file, rename, File},
     io::{BufRead, BufReader, Read, Write},
     path::Path,
 };
@@ -36,7 +36,23 @@ impl Manifest {
 
     pub(crate) fn alloc_wal(&mut self) -> u64 {
         let file_seq = self.next_file_seq;
+        self.next_file_seq += 1;
         self.wals.insert(file_seq);
+        file_seq
+    }
+
+    pub(crate) fn alloc_sst(&mut self, level: usize) -> u64 {
+        let file_seq = self.next_file_seq;
+        self.next_file_seq += 1;
+        self.sstables[level].insert(file_seq);
+        file_seq
+    }
+
+    pub(crate) fn remove_wal(&mut self) -> u64 {
+        let mut file_seqs: Vec<&u64> = self.wals.iter().collect();
+        file_seqs.sort_unstable();
+        let file_seq = *file_seqs[0];
+        self.wals.remove(&file_seq);
         file_seq
     }
 
@@ -45,9 +61,10 @@ impl Manifest {
         if !Path::new(&current_path).try_exists()? {
             Manifest::write_current(&current_path, 0)?;
         }
-        let manifest_seq = Manifest::read_current(db_path)? + 1;
+        let manifest_seq = Manifest::read_current(db_path)?;
 
-        let manifest_path = manifest_path(db_path, manifest_seq)?;
+        let old_manifest_path = manifest_path(db_path, manifest_seq)?;
+        let manifest_path = manifest_path(db_path, manifest_seq + 1)?;
         let mut file = File::create(manifest_path)?;
         for file_seq in &self.wals {
             let line = format!("{:06}.wal\n", file_seq);
@@ -61,6 +78,10 @@ impl Manifest {
         }
 
         Manifest::atomic_increase_current(db_path)?;
+        if Path::new(&old_manifest_path).try_exists()? {
+            remove_file(old_manifest_path)?;
+        }
+
         Ok(())
     }
 
@@ -96,14 +117,6 @@ impl Manifest {
         Manifest::write_current(&current_tmp_path, manifest_seq)?;
         rename(current_tmp_path, current_path)?;
         Ok(())
-    }
-
-    fn get_level(db_path: &str, file_seq: u64) -> EikvResult<usize> {
-        for level in LEVEL_MIN..=LEVEL_MAX {
-            let level_dir = sst_level_dir_path(db_path, level)?;
-        }
-
-        todo!()
     }
 
     pub(crate) fn load(db_path: &str) -> EikvResult<Manifest> {

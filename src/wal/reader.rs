@@ -1,8 +1,5 @@
 use crate::{util::coding::decode_fixed_u32, EikvError, EikvResult, Key, Value, WriteBatch};
-use std::{
-    fs::File,
-    io::{Read, Seek},
-};
+use std::{fs::File, io::Read};
 
 pub(crate) struct Reader {
     file: File,

@@ -1,8 +1,12 @@
-use crate::{model::Entry, Key, Value, WriteBatch};
+use crate::{
+    model::{Entry, Manifest},
+    sst::Writer,
+    EikvResult, Key, Value, WriteBatch,
+};
 use std::{
     collections::BTreeSet,
     mem,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Condvar, Mutex, RwLock},
 };
 
 pub(crate) type Table<K, V> = BTreeSet<Entry<K, V>>;
@@ -45,13 +49,21 @@ impl<K: Key, V: Value> MemTable<K, V> {
         {
             let mut_table = self.mut_table.lock().unwrap();
             if let Some(entry) = mut_table.range(..=&max_entry).next_back() {
-                return Some(entry.clone());
+                if entry.key == max_entry.key {
+                    return Some(entry.clone());
+                }
             }
         }
 
         let immut_table = { self.immut_table.read().unwrap().clone() };
         match immut_table.range(..=&max_entry).next_back() {
-            Some(entry) => Some(entry.clone()),
+            Some(entry) => {
+                if entry.key == max_entry.key {
+                    Some(entry.clone())
+                } else {
+                    None
+                }
+            }
             None => None,
         }
     }
@@ -64,5 +76,15 @@ impl<K: Key, V: Value> MemTable<K, V> {
     pub(super) fn recover_immut_table(&mut self, table: Table<K, V>) {
         let mut guard = self.immut_table.write().unwrap();
         *guard = Arc::new(table);
+    }
+
+    pub(super) fn dump(&self, mut writer: Writer<K, V>) -> EikvResult<()> {
+        let table = self.immut_table.read().unwrap().clone();
+        for entry in table.iter() {
+            writer.append(entry.clone())?;
+        }
+        writer.finish()?;
+        *self.immut_table.write().unwrap() = Arc::new(Table::new());
+        Ok(())
     }
 }

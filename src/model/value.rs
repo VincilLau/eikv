@@ -1,6 +1,6 @@
 use std::error::Error;
 
-pub trait Value: Clone {
+pub trait Value: Clone + Send + Sync {
     fn encode(self) -> Result<Vec<u8>, Box<dyn Error>>;
     fn decode(bytes: Vec<u8>) -> Result<Self, Box<dyn Error>>;
 }

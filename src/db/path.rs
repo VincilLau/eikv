@@ -42,6 +42,12 @@ pub(crate) fn sst_level_dir_path(db_path: &str, level: usize) -> EikvResult<Stri
     join_path(&sst_dir_path(db_path)?, &level.to_string())
 }
 
+pub(crate) fn sst_path(db_path: &str, level: usize, file_seq: u64) -> EikvResult<String> {
+    let sst_level_dir_path = join_path(&sst_dir_path(db_path)?, &level.to_string())?;
+    let file_name = format!("{:06}.sst", file_seq);
+    join_path(&sst_level_dir_path, &file_name)
+}
+
 pub(crate) fn wal_dir_path(db_path: &str) -> EikvResult<String> {
     join_path(db_path, "wal")
 }
