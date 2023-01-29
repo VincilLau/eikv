@@ -1,6 +1,6 @@
 use super::{Iterator, Writer};
 use crate::{model::Entry, util::time::unix_now, DBOptions, EikvResult, Key, Value};
-use std::cmp::{min, Ordering};
+use std::{cmp::min, mem::swap};
 
 pub(crate) struct Merger<K: Key, V: Value> {
     iterators: Vec<Iterator<K, V>>,
@@ -100,6 +100,10 @@ impl<K: Key, V: Value> Merger<K, V> {
                 return Ok(MergeResult::Finish);
             }
 
+            if self.writer.full()? {
+                return Ok(MergeResult::Full);
+            }
+
             let entries = self.read_some()?;
             debug_assert!(!entries.is_empty());
             for entry in entries {
@@ -111,5 +115,14 @@ impl<K: Key, V: Value> Merger<K, V> {
                 return Ok(MergeResult::Timeout);
             }
         }
+    }
+
+    pub(crate) fn set_writer(&mut self, mut writer: Writer<K, V>) -> EikvResult<()> {
+        swap(&mut self.writer, &mut writer);
+        writer.finish()
+    }
+
+    pub(crate) fn finish(self) -> EikvResult<()> {
+        self.writer.finish()
     }
 }

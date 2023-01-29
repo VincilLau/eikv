@@ -22,10 +22,10 @@ impl<K: Key, V: Value> Iterator<K, V> {
     pub(crate) fn new(
         path: &str,
         options: DBOptions,
-        sst_meta: Arc<SstMeta<K, V>>,
+        sst_meta: SstMeta<K, V>,
     ) -> EikvResult<Iterator<K, V>> {
         let file = OpenOptions::new().read(true).open(path)?;
-        let index_block_iterator = index_block::Iterator::new(sst_meta.clone());
+        let index_block_iterator = index_block::Iterator::new(sst_meta);
         let iterator = Iterator {
             entry_index: 0,
             entries: vec![],

@@ -58,6 +58,11 @@ impl<K: Key, V: Value> Writer<K, V> {
         self.block_builder.append(entry)
     }
 
+    pub(crate) fn full(&mut self) -> EikvResult<bool> {
+        let offset = self.file.stream_position()?;
+        Ok(offset >= self.size_limit)
+    }
+
     fn build_index_block(&mut self, data_block_end: u64) -> EikvResult<u64> {
         debug_assert_eq!(self.options.block_size % 8, 0);
 

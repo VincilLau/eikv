@@ -3,7 +3,6 @@ use std::{
     cmp::min,
     fs::File,
     io::{Read, Seek, SeekFrom},
-    sync::Arc,
 };
 
 pub(super) struct Iterator {
@@ -18,7 +17,7 @@ pub(super) struct Iterator {
 }
 
 impl Iterator {
-    pub(super) fn new<K: Key, V: Value>(sst_meta: Arc<SstMeta<K, V>>) -> Iterator {
+    pub(super) fn new<K: Key, V: Value>(sst_meta: SstMeta<K, V>) -> Iterator {
         Iterator {
             block_size: sst_meta.block_size,
             data_block_count: sst_meta.data_block_count,
@@ -83,7 +82,7 @@ impl Iterator {
             return Err(EikvError::SstCorrpution(reason));
         }
 
-        let offset_count = self.block_size % 8 - 1;
+        let offset_count = self.block_size / 8 - 1;
         let offset_count =
             if self.index_block_offset + self.block_size as u64 == self.index_block_end {
                 self.data_block_count as usize % offset_count

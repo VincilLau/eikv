@@ -73,6 +73,11 @@ impl<K: Key, V: Value> MemDB<K, V> {
         self.write_queue.notify_waiters();
     }
 
+    pub(crate) fn has_immut(&self) -> bool {
+        let immut_wal = self.immut_wal.lock().unwrap();
+        immut_wal.is_some()
+    }
+
     pub(crate) fn wait_immut(&self) -> bool {
         let mut immut_wal = self.immut_wal.lock().unwrap();
         while immut_wal.is_none() {
